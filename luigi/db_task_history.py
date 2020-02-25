@@ -39,18 +39,19 @@ import datetime
 import logging
 from contextlib import contextmanager
 
-from luigi import six
-
-from luigi import configuration
-from luigi import task_history
-from luigi.task_status import DONE, FAILED, PENDING, RUNNING
-
 import sqlalchemy
 import sqlalchemy.ext.declarative
 import sqlalchemy.orm
 import sqlalchemy.orm.collections
 from sqlalchemy.engine import reflection
+
+from luigi import configuration
+from luigi import six
+from luigi import task_history
+from luigi.task_status import DONE, FAILED, PENDING, RUNNING
+
 Base = sqlalchemy.ext.declarative.declarative_base()
+from sqlalchemy.ext.compiler import compiles
 
 logger = logging.getLogger('luigi-interface')
 
@@ -136,15 +137,19 @@ class DbTaskHistory(task_history.TaskHistory):
         Find tasks with the given task_name and the same parameters as the kwargs.
         """
         with self._session(session) as session:
-            query = session.query(TaskRecord).join(TaskEvent).filter(TaskRecord.name == task_name)
+            query = session.query(TaskRecord).join(TaskEvent)
+
+            if task_name:
+                query = query.filter(TaskRecord.name == task_name)
             for (k, v) in six.iteritems(task_params):
                 alias = sqlalchemy.orm.aliased(TaskParameter)
-                query = query.join(alias).filter(alias.name == k, alias.value == v)
+                query = query.join(alias).filter(alias.name == k, alias.value.like(v))
 
             tasks = query.order_by(TaskEvent.ts)
             for task in tasks:
                 # Sanity check
-                assert all(k in task.parameters and v == str(task.parameters[k].value) for (k, v) in six.iteritems(task_params))
+                assert all(k in task.parameters and v == str(task.parameters[k].value) for (k, v) in
+                           six.iteritems(task_params))
 
                 yield task
 
@@ -160,11 +165,11 @@ class DbTaskHistory(task_history.TaskHistory):
         """
         with self._session(session) as session:
             yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
-            return session.query(TaskRecord).\
-                join(TaskEvent).\
-                filter(TaskEvent.ts >= yesterday).\
-                group_by(TaskRecord.id, TaskEvent.event_name, TaskEvent.ts).\
-                order_by(TaskEvent.ts.desc()).\
+            return session.query(TaskRecord.id, TaskEvent.event_name, TaskEvent.ts). \
+                join(TaskEvent). \
+                filter(TaskEvent.ts >= yesterday). \
+                group_by(TaskRecord.id, TaskEvent.event_name, TaskEvent.ts). \
+                order_by(TaskEvent.ts.desc()). \
                 all()
 
     def find_all_runs(self, session=None):
@@ -200,6 +205,11 @@ class TaskParameter(Base):
 
     def __repr__(self):
         return "TaskParameter(task_id=%d, name=%s, value=%s)" % (self.task_id, self.name, self.value)
+
+
+@compiles(sqlalchemy.TIMESTAMP, "mssql")
+def compile_timestamp_mssql(type_, compiler, **kw):
+    return "DATETIME2"
 
 
 class TaskEvent(Base):
@@ -277,7 +287,7 @@ def _upgrade_schema(engine):
                     )
         else:
             logger.warning(
-                'SQLAlcheny dialect {} could not be migrated to the TEXT type'.format(
+                'SQLAlchemy dialect {} could not be migrated to the TEXT type'.format(
                     engine.dialect
                 )
             )
