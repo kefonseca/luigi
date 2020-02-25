@@ -136,10 +136,13 @@ class DbTaskHistory(task_history.TaskHistory):
         Find tasks with the given task_name and the same parameters as the kwargs.
         """
         with self._session(session) as session:
-            query = session.query(TaskRecord).join(TaskEvent).filter(TaskRecord.name == task_name)
+            query = session.query(TaskRecord).join(TaskEvent)
+
+            if task_name:
+                query = query.filter(TaskRecord.name == task_name)
             for (k, v) in six.iteritems(task_params):
                 alias = sqlalchemy.orm.aliased(TaskParameter)
-                query = query.join(alias).filter(alias.name == k, alias.value == v)
+                query = query.join(alias).filter(alias.name == k, alias.value.like(v))
 
             tasks = query.order_by(TaskEvent.ts)
             for task in tasks:
@@ -160,7 +163,7 @@ class DbTaskHistory(task_history.TaskHistory):
         """
         with self._session(session) as session:
             yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
-            return session.query(TaskRecord).\
+            return session.query(TaskRecord.id, TaskEvent.event_name, TaskEvent.ts).\
                 join(TaskEvent).\
                 filter(TaskEvent.ts >= yesterday).\
                 group_by(TaskRecord.id, TaskEvent.event_name, TaskEvent.ts).\
@@ -277,7 +280,7 @@ def _upgrade_schema(engine):
                     )
         else:
             logger.warning(
-                'SQLAlcheny dialect {} could not be migrated to the TEXT type'.format(
+                'SQLAlchemy dialect {} could not be migrated to the TEXT type'.format(
                     engine.dialect
                 )
             )
